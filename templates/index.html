@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Painel Financeiro – Eventos</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body { background:#0f172a; color:#e5e7eb }
+.card { background:#020617; border-radius:12px }
+.valor-receita { color:#22c55e; font-weight:bold }
+.valor-despesa { color:#ef4444; font-weight:bold }
+.badge-receita { background:#16a34a }
+.badge-despesa { background:#dc2626 }
+
+table th {
+    position: relative;
+    cursor: col-resize;
+    user-select: none;
+}
+
+th .resizer {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+}
+</style>
+</head>
+
+<body>
+<div class="container-fluid p-4">
+
+<h2 class="mb-4">📊 Painel Financeiro por Evento</h2>
+
+<select id="filtroEvento" class="form-select mb-4" onchange="aplicarFiltro()">
+    <option value="Todos">Todos</option>
+</select>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Receitas</h5>
+            <h3 id="totalReceitas" class="valor-receita"></h3>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Despesas</h5>
+            <h3 id="totalDespesas" class="valor-despesa"></h3>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Resultado</h5>
+            <h3 id="resultado"></h3>
+        </div>
+    </div>
+</div>
+
+<div class="card p-4 mb-4">
+    <canvas id="graficoEventos"></canvas>
+</div>
+
+<div class="card p-4">
+<table class="table table-dark table-hover" id="tabela">
+<thead>
+<tr>
+    <th style="width:120px;">Data ⬍ <div class="resizer"></div></th>
+    <th style="width:250px;">Evento ⬍ <div class="resizer"></div></th>
+    <th style="width:120px;">Tipo ⬍ <div class="resizer"></div></th>
+    <th style="width:150px;">Valor ⬍ <div class="resizer"></div></th>
+    <th style="width:350px;">Obs ⬍ <div class="resizer"></div></th>
+    <th style="width:220px;">Anexo <div class="resizer"></div></th>
+</tr>
+</thead>
+<tbody id="tabelaDados"></tbody>
+</table>
+</div>
+
+</div>
+
+<script>
+let dadosOriginais = [];
+let grafico = null;
+
+async function carregarDados(){
+    const r = await fetch("/dados");
+    dadosOriginais = await r.json();
+    preencherFiltro();
+    aplicarFiltro();
+}
+
+function preencherFiltro(){
+    const s = document.getElementById("filtroEvento");
+    s.innerHTML = '<option value="Todos">Todos</option>';
+
+    const eventos = [...new Set(dadosOriginais.map(d => d.categoria))];
+    eventos.forEach(e => {
+        if(!e) return;
+        const o = document.createElement("option");
+        o.value = e;
+        o.textContent = e;
+        s.appendChild(o);
+    });
+}
+
+function aplicarFiltro(){
+    const ev = document.getElementById("filtroEvento").value;
+    const dados = ev === "Todos"
+        ? dadosOriginais
+        : dadosOriginais.filter(d => d.categoria === ev);
+
+    renderizar(dados);
+}
+
+function renderizar(dados){
+    let totalReceitas = 0;
+    let totalDespesas = 0;
+    const tabela = document.getElementById("tabelaDados");
+    tabela.innerHTML = "";
+
+    dados.forEach(item => {
+        const valor = Number(item.valor) || 0;
+
+        if(item.tipo === "Receita") totalReceitas += valor;
+        else totalDespesas += valor;
+
+        const badge = item.tipo === "Receita"
+            ? '<span class="badge badge-receita">Receita</span>'
+            : '<span class="badge badge-despesa">Despesa</span>';
+
+        const link = item.anexo
+            ? `<a href="${item.anexo}" target="_blank">📎 Visualizar</a>`
+            : "<small class='text-secondary'>Sem anexo</small>";
+
+        tabela.innerHTML += `
+        <tr>
+            <td>${formatarData(item.data)}</td>
+            <td>${item.categoria || ""}</td>
+            <td>${badge}</td>
+            <td class="${item.tipo === "Receita" ? "valor-receita" : "valor-despesa"}">
+                ${valor.toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}
+            </td>
+            <td>${item.observacao || ""}</td>
+            <td>
+                <input type="file" id="file_${item.id}" class="form-control form-control-sm mb-1">
+                <button class="btn btn-sm btn-primary w-100" onclick="enviar(${item.id})">
+                    Enviar
+                </button>
+                <div class="mt-1">${link}</div>
+            </td>
+        </tr>`;
+    });
+
+    document.getElementById("totalReceitas").innerText =
+        totalReceitas.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+
+    document.getElementById("totalDespesas").innerText =
+        totalDespesas.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+
+    const resultado = totalReceitas - totalDespesas;
+    const el = document.getElementById("resultado");
+    el.innerText = resultado.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+    el.style.color = resultado >= 0 ? "#22c55e" : "#ef4444";
+
+    criarGrafico(dados);
+}
+
+function formatarData(data){
+    if(!data) return "";
+    return new Date(data).toLocaleDateString("pt-BR");
+}
+
+function criarGrafico(dados){
+    const ctx = document.getElementById("graficoEventos");
+    if(grafico) grafico.destroy();
+
+    const eventos = {};
+    dados.forEach(d => {
+        if(!eventos[d.categoria]) eventos[d.categoria] = { receita:0, despesa:0 };
+        if(d.tipo === "Receita") eventos[d.categoria].receita += Number(d.valor)||0;
+        else eventos[d.categoria].despesa += Number(d.valor)||0;
+    });
+
+    const labels = Object.keys(eventos);
+    const receitas = labels.map(e => eventos[e].receita);
+    const despesas = labels.map(e => eventos[e].despesa);
+
+    grafico = new Chart(ctx,{
+        type:"bar",
+        data:{
+            labels,
+            datasets:[
+                { label:"Receitas", data:receitas, backgroundColor:"#22c55e" },
+                { label:"Despesas", data:despesas, backgroundColor:"#ef4444" }
+            ]
+        },
+        options:{ responsive:true }
+    });
+}
+
+async function enviar(id){
+    const f = document.getElementById(`file_${id}`).files[0];
+    if(!f) return alert("Selecione um arquivo");
+
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("id", id);
+
+    const r = await fetch("/upload",{ method:"POST", body:fd });
+    const res = await r.json();
+
+    if(res.ok){
+        alert("Anexo enviado!");
+        await carregarDados();
+    }else{
+        alert(res.erro);
+    }
+}
+
+carregarDados();
+</script>
+</body>
+</html>
